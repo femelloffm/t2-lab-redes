@@ -2,69 +2,105 @@
 // Separa o dado, o endere�o IP e a porta deste cliente
 // Imprime o dado na tela
 
-import java.io.*;
-import java.net.*;
+import java.io.IOException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.util.Arrays;
 import java.util.zip.CRC32;
 
+import static enums.MessageType.*;
+
 class UDPServer {
-    private final static String SEPARATOR = "/";
+    private final static char SEPARATOR = '/';
+    private final static Integer PACKET_BYTE_SIZE = 300;
+    private final static Integer PORT = 9876;
     private final static CRC32 crcCalculator = new CRC32();
 
-    public static void main(String args[]) throws Exception {
-        // cria socket do servidor com a porta 9876
-        DatagramSocket serverSocket = new DatagramSocket(9876);
+    public static void main(String[] args) {
 
-        byte[] receiveData = new byte[1024];
-        byte[] sendData = new byte[1024];
-        boolean hasActiveConnection = false;
-        while (true) {
-            // declara o pacote a ser recebido
-            DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
+        try (DatagramSocket serverSocket = new DatagramSocket(PORT)) {
 
-            // recebe o pacote do cliente
-            serverSocket.receive(receivePacket);
+            byte[] sendData;
+            byte[] receiveData = new byte[300];
+            boolean hasActiveConnection = false;
+            int ackNumber = 0;
 
             while (true) {
-                // pega os dados, o endere�o IP e a porta do cliente
-                // para poder mandar a msg de volta
-                String sentence = new String(receivePacket.getData());
-                InetAddress IPAddress = receivePacket.getAddress();
-                int port = receivePacket.getPort();
-                System.out.println("Mensagem recebida: " + sentence);
+                // RECEBE NOVA MENSAGEM
+                DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
+                serverSocket.receive(receivePacket);
 
-                String[] sentenceParts = sentence.split(SEPARATOR);
+                InetAddress clientIpAddress = receivePacket.getAddress();
+                String receivedMessage = new String(receivePacket.getData());
+                int clientPort = receivePacket.getPort();
+                System.out.printf("Mensagem recebida de endereco %s:%d --> %s", clientIpAddress.getHostAddress(), clientPort, receivedMessage);
 
-                crcCalculator.update(sentenceParts[2].getBytes());
-                long checkCalculatedCrc = crcCalculator.getValue();
-                if (checkCalculatedCrc != Long.valueOf(sentenceParts[1])) {
-                    break;
-                }
+                // VERIFICA CRC
+                boolean correctCrc = checkReceivedPacketCrc(receivedMessage);
+                if (!correctCrc)
+                    continue;
 
-                // falta no cliente e servidor calcular e validar o CRC para cada mensagem
-                // recebida
-                if (sentenceParts[2].contains("SYN")) {
-                    System.out.println("SOLICITACAO DE ESTABELECIMENTO DE CONEXAO RECEBIDA");
-                    // recebeu mensagem com num sequencia 0 --> primeiro pacote
-                    String data = "SYNACK";
-                    crcCalculator.update(data.getBytes());
-                    long calculatedCrc = crcCalculator.getValue();
-                    String sendStr = String.format("0%s%d%s%s", SEPARATOR, calculatedCrc, SEPARATOR, data);
-                    sendData = sendStr.getBytes();
-                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, IPAddress, port);
+                // RECEBEU SOLICITACAO PARA ESTABELECIMENTO DE CONEXAO
+                if (!hasActiveConnection && receivedMessage.contains(SYN.name())) {
+                    sendData = formatPacketData(ackNumber, SYNACK.name());
+                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, PORT);
 
-                    System.out.println("ENVIANDO SYN + ACK PARA ESTABELECIMENTO DE CONEXAO");
+                    System.out.printf("Enviando mensagem para endereco %s:%d --> %s", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
                     serverSocket.send(sendPacket);
-
-                    crcCalculator.reset();
-                    Arrays.fill(receiveData, (byte) 0);
-                    Arrays.fill(sendData, (byte) 0);
+                    hasActiveConnection = true;
                 }
+                // RECEBEU SOLICITACAO PARA ENCERRAMENTO DE CONEXAO
+                else if (hasActiveConnection && receivedMessage.contains(FIN.name())) {
+                    // TODO enviar FINACK
+                    hasActiveConnection = false;
+                    ackNumber = 0;
+                }
+                // RECEBEU DADOS
+                else if (hasActiveConnection) {
+                    int receivedSequenceNumber = Integer.parseInt(receivedMessage.split(String.valueOf(SEPARATOR))[0]);
+                    ackNumber = receivedSequenceNumber + 1;
+                    // TODO se recebe um pacote com num de sequencia X mas um de numero de sequencia menor nao foi recebido, transmite um ACK com o numero de sequencia do ultimo pacote confirmado
+                    // TODO salvar dado em arquivo
 
-                break;
+                    sendData = formatPacketData(ackNumber, ACK.name());
+                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, PORT);
+
+                    System.out.printf("Enviando mensagem para endereco %s:%d --> %s", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
+                    serverSocket.send(sendPacket);
+                }
             }
-            break;
-
+        } catch (IOException e) {
+            e.printStackTrace();
         }
+    }
+
+    private static byte[] formatPacketData(int ackNumber, String data) {
+        // Calcula CRC
+        crcCalculator.update(data.getBytes());
+        long calculatedCrc = crcCalculator.getValue();
+
+        // Monta dados do pacote --> num.ack/CRC/dados
+        String dataStr = String.format("%d%c%d%c%s", ackNumber, SEPARATOR, calculatedCrc, SEPARATOR, data);
+        int dataStrSize = dataStr.getBytes().length;
+        byte[] finalBuffer = Arrays.copyOf(dataStr.getBytes(), PACKET_BYTE_SIZE);
+
+        // Se dados do pacote foram menores que 300
+        if (dataStrSize < PACKET_BYTE_SIZE) {
+            // Adicona separados entre dados e padding, conforme --> num.sequencia/CRC/dados/padding
+            finalBuffer[dataStrSize] = (byte) SEPARATOR;
+        }
+
+        crcCalculator.reset();
+        return finalBuffer;
+    }
+
+    private static boolean checkReceivedPacketCrc(String packetData) {
+        String[] packetDataParts = packetData.split(String.valueOf(SEPARATOR));
+        crcCalculator.update(packetDataParts[2].getBytes());
+        long checkCalculatedCrc = crcCalculator.getValue();
+
+        crcCalculator.reset();
+        return checkCalculatedCrc == Long.parseLong(packetDataParts[1]);
     }
 }
