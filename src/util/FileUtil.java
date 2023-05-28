@@ -3,6 +3,7 @@ package util;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 
 public class FileUtil {
     public static byte[] readBytesFromFile(String fileName) throws IOException {
@@ -12,6 +13,6 @@ public class FileUtil {
 
     public static void writeBytesToFile(String fileName, byte[] data) throws IOException {
         File file = new File(fileName);
-        Files.write(file.toPath(), data);
+        Files.write(file.toPath(), data, StandardOpenOption.APPEND);
     }
 }
