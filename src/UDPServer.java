@@ -2,12 +2,14 @@
 // Separa o dado, o endere�o IP e a porta deste cliente
 // Imprime o dado na tela
 
+import util.CrcCalculator;
+import util.FileUtil;
+
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.util.Arrays;
-import java.util.zip.CRC32;
 
 import static enums.MessageType.*;
 
@@ -15,7 +17,6 @@ class UDPServer {
     private final static char SEPARATOR = '/';
     private final static Integer PACKET_BYTE_SIZE = 300;
     private final static Integer PORT = 9876;
-    private final static CRC32 crcCalculator = new CRC32();
 
     public static void main(String[] args) {
 
@@ -26,7 +27,8 @@ class UDPServer {
             boolean hasActiveConnection = false;
             int ackNumber = 0;
 
-            while (true) {
+            int i = 0;
+            while (i < 10) {
                 // RECEBE NOVA MENSAGEM
                 DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
                 serverSocket.receive(receivePacket);
@@ -34,10 +36,11 @@ class UDPServer {
                 InetAddress clientIpAddress = receivePacket.getAddress();
                 String receivedMessage = new String(receivePacket.getData());
                 int clientPort = receivePacket.getPort();
-                System.out.printf("Mensagem recebida de endereco %s:%d --> %s", clientIpAddress.getHostAddress(), clientPort, receivedMessage);
+                System.out.printf("Mensagem recebida de endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, receivedMessage);
 
                 // VERIFICA CRC
-                boolean correctCrc = checkReceivedPacketCrc(receivedMessage);
+                String[] packetDataParts = receivedMessage.split(String.valueOf(SEPARATOR));
+                boolean correctCrc = CrcCalculator.checkReceivedPacketCrc(Long.parseLong(packetDataParts[1]), packetDataParts[2].getBytes());
                 if (!correctCrc)
                     continue;
 
@@ -46,7 +49,7 @@ class UDPServer {
                     sendData = formatPacketData(ackNumber, SYNACK.name());
                     DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, PORT);
 
-                    System.out.printf("Enviando mensagem para endereco %s:%d --> %s", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
+                    System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
                     serverSocket.send(sendPacket);
                     hasActiveConnection = true;
                 }
@@ -57,18 +60,19 @@ class UDPServer {
                     ackNumber = 0;
                 }
                 // RECEBEU DADOS
-                else if (hasActiveConnection) {
-                    int receivedSequenceNumber = Integer.parseInt(receivedMessage.split(String.valueOf(SEPARATOR))[0]);
+                else if (hasActiveConnection && !receivedMessage.contains(ACK.name())) {
+                    int receivedSequenceNumber = Integer.parseInt(packetDataParts[0]);
                     ackNumber = receivedSequenceNumber + 1;
                     // TODO se recebe um pacote com num de sequencia X mas um de numero de sequencia menor nao foi recebido, transmite um ACK com o numero de sequencia do ultimo pacote confirmado
-                    // TODO salvar dado em arquivo
+                    FileUtil.writeBytesToFile("teste2.txt", packetDataParts[2].getBytes());
 
                     sendData = formatPacketData(ackNumber, ACK.name());
                     DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, PORT);
 
-                    System.out.printf("Enviando mensagem para endereco %s:%d --> %s", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
+                    System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
                     serverSocket.send(sendPacket);
                 }
+                i++;
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -77,8 +81,7 @@ class UDPServer {
 
     private static byte[] formatPacketData(int ackNumber, String data) {
         // Calcula CRC
-        crcCalculator.update(data.getBytes());
-        long calculatedCrc = crcCalculator.getValue();
+        long calculatedCrc = CrcCalculator.calculateCrc(data.getBytes());
 
         // Monta dados do pacote --> num.ack/CRC/dados
         String dataStr = String.format("%d%c%d%c%s", ackNumber, SEPARATOR, calculatedCrc, SEPARATOR, data);
@@ -91,16 +94,6 @@ class UDPServer {
             finalBuffer[dataStrSize] = (byte) SEPARATOR;
         }
 
-        crcCalculator.reset();
         return finalBuffer;
-    }
-
-    private static boolean checkReceivedPacketCrc(String packetData) {
-        String[] packetDataParts = packetData.split(String.valueOf(SEPARATOR));
-        crcCalculator.update(packetDataParts[2].getBytes());
-        long checkCalculatedCrc = crcCalculator.getValue();
-
-        crcCalculator.reset();
-        return checkCalculatedCrc == Long.parseLong(packetDataParts[1]);
     }
 }
