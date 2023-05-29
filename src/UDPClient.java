@@ -62,7 +62,7 @@ class UDPClient {
                continue;
 
             // RECEBEU SOLICITACAO PARA ESTABELECIMENTO DE CONEXAO
-            if (!hasActiveConnection && receivedMessage.contains(SYNACK.name())) {
+            if (!hasActiveConnection && packetDataParts[2].equals(SYNACK.name())) {
                sendData = formatPacketData(sequenceNumber, ACK.name());
                sendPacket = new DatagramPacket(sendData, sendData.length, ipServerAddress, PORT);
                System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
@@ -71,7 +71,7 @@ class UDPClient {
                hasActiveConnection = true;
             }
             // RECEBEU SOLICITACAO PARA ENCERRAMENTO DE CONEXAO
-            else if (hasActiveConnection && receivedMessage.contains(FINACK.name())) {
+            else if (hasActiveConnection && packetDataParts[2].equals(FINACK.name())) {
                sendData = formatPacketData(0, ACK.name());
                sendPacket = new DatagramPacket(sendData, sendData.length, ipServerAddress, PORT);
                System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
@@ -82,10 +82,10 @@ class UDPClient {
                break;
             }
             // ENVIA DADOS
-            else if (hasActiveConnection && fileOffset < fileBytes.length) {
+            if (hasActiveConnection && fileOffset < fileBytes.length) {
                FilePacketInformation newPacketInfo = formatPacketDataForFileTransfer(sequenceNumber, fileBytes, fileOffset);
                sendPacket = new DatagramPacket(newPacketInfo.getData(), newPacketInfo.getData().length, ipServerAddress, PORT);
-               System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
+               System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(newPacketInfo.getData()));
                clientSocket.send(sendPacket);
                fileOffset = newPacketInfo.getFileOffset();
                sequenceNumber += 1;
@@ -125,7 +125,7 @@ class UDPClient {
 
    private static FilePacketInformation formatPacketDataForFileTransfer(int sequenceNumber, byte[] fileData, int fileOffset) {
       // TAMANHO DO PACOTE SEM DADOS: num.seq (4 bytes) + separador (2 bytes) + crc (4 bytes) + separador (2 bytes) --> 12 bytes
-      int maxDataBytes = PACKET_BYTE_SIZE - 12;
+      int maxDataBytes = PACKET_BYTE_SIZE - 14;
       byte[] dataBytes;
       int newOffset;
 
@@ -140,9 +140,11 @@ class UDPClient {
       }
 
       // Calcula CRC
+
       long calculatedCrc = CrcCalculator.calculateCrc(dataBytes);
       // Monta dados do pacote
       String dataStr = String.format("%d%c%d%c%s", sequenceNumber, SEPARATOR, calculatedCrc, SEPARATOR, new String(dataBytes));
+
       return new FilePacketInformation(dataStr.getBytes(), newOffset);
    }
 }

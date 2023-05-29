@@ -18,6 +18,7 @@ class UDPServer {
     private final static Integer PACKET_BYTE_SIZE = 300;
     private final static Integer PORT = 9876;
 
+
     public static void main(String[] args) {
 
         try (DatagramSocket serverSocket = new DatagramSocket(PORT)) {
@@ -27,8 +28,7 @@ class UDPServer {
             boolean hasActiveConnection = false;
             int ackNumber = 0;
 
-            int i = 0;
-            while (i < 10) {
+            while (true) {
                 // RECEBE NOVA MENSAGEM
                 DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
                 serverSocket.receive(receivePacket);
@@ -41,38 +41,41 @@ class UDPServer {
                 // VERIFICA CRC
                 String[] packetDataParts = receivedMessage.split(String.valueOf(SEPARATOR));
                 boolean correctCrc = CrcCalculator.checkReceivedPacketCrc(Long.parseLong(packetDataParts[1]), packetDataParts[2].getBytes());
-                if (!correctCrc)
+                if (!correctCrc){
                     continue;
+                }
 
                 // RECEBEU SOLICITACAO PARA ESTABELECIMENTO DE CONEXAO
-                if (!hasActiveConnection && receivedMessage.contains(SYN.name())) {
+                if (!hasActiveConnection && packetDataParts[2].equals(SYN.name())) {
                     sendData = formatPacketData(ackNumber, SYNACK.name());
-                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, PORT);
+                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
 
                     System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
                     serverSocket.send(sendPacket);
                     hasActiveConnection = true;
                 }
                 // RECEBEU SOLICITACAO PARA ENCERRAMENTO DE CONEXAO
-                else if (hasActiveConnection && receivedMessage.contains(FIN.name())) {
+                else if (hasActiveConnection && packetDataParts[2].equals(FIN.name())) {
                     // TODO enviar FINACK
                     hasActiveConnection = false;
                     ackNumber = 0;
+                    sendData = formatPacketData(ackNumber, FINACK.name());
+                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
+                    serverSocket.send(sendPacket);
                 }
                 // RECEBEU DADOS
-                else if (hasActiveConnection && !receivedMessage.contains(ACK.name())) {
+                else if (hasActiveConnection && !packetDataParts[2].equals(ACK.name())) {
                     int receivedSequenceNumber = Integer.parseInt(packetDataParts[0]);
                     ackNumber = receivedSequenceNumber + 1;
                     // TODO se recebe um pacote com num de sequencia X mas um de numero de sequencia menor nao foi recebido, transmite um ACK com o numero de sequencia do ultimo pacote confirmado
                     FileUtil.writeBytesToFile("teste2.txt", packetDataParts[2].getBytes());
 
                     sendData = formatPacketData(ackNumber, ACK.name());
-                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, PORT);
+                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
 
                     System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
                     serverSocket.send(sendPacket);
                 }
-                i++;
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -89,6 +92,7 @@ class UDPServer {
         byte[] finalBuffer = Arrays.copyOf(dataStr.getBytes(), PACKET_BYTE_SIZE);
 
         // Se dados do pacote foram menores que 300
+
         if (dataStrSize < PACKET_BYTE_SIZE) {
             // Adicona separados entre dados e padding, conforme --> num.sequencia/CRC/dados/padding
             finalBuffer[dataStrSize] = (byte) SEPARATOR;

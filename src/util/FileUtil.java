@@ -13,6 +13,11 @@ public class FileUtil {
 
     public static void writeBytesToFile(String fileName, byte[] data) throws IOException {
         File file = new File(fileName);
-        Files.write(file.toPath(), data, StandardOpenOption.APPEND);
+        if(!file.exists()){
+            Files.write(file.toPath(), data);
+        }
+        else{
+            Files.write(file.toPath(), data, StandardOpenOption.APPEND);
+        }
     }
 }

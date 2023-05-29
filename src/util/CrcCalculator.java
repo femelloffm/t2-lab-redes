@@ -16,7 +16,6 @@ public class CrcCalculator {
     public static boolean checkReceivedPacketCrc(long expectedCrc, byte[] data) {
         crcCalculator.update(data);
         long checkCalculatedCrc = crcCalculator.getValue();
-
         crcCalculator.reset();
         return checkCalculatedCrc == expectedCrc;
     }
