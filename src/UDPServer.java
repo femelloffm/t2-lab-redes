@@ -9,21 +9,17 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.nio.ByteBuffer;
-import java.util.Arrays;
 
+import static config.AppConstants.SEPARATOR;
+import static config.AppConstants.SERVER_PORT;
 import static enums.MessageType.*;
+import static util.PacketFormatter.formatPacketData;
 
 class UDPServer {
-    private final static char SEPARATOR = '/';
-    private final static Integer PACKET_BYTE_SIZE = 300;
-    private final static Integer HEADERS_BYTE_SIZE = 20;
-    private final static Integer PORT = 9876;
-
 
     public static void main(String[] args) {
 
-        try (DatagramSocket serverSocket = new DatagramSocket(PORT)) {
+        try (DatagramSocket serverSocket = new DatagramSocket(SERVER_PORT)) {
 
             byte[] sendData;
             byte[] receiveData = new byte[300];
@@ -84,46 +80,5 @@ class UDPServer {
         } catch (IOException e) {
             e.printStackTrace();
         }
-    }
-
-    private static byte[] formatPacketData(int sequenceNumber, String data) {
-        // Calcula CRC
-        byte[] dataBytes = data.getBytes();
-        long calculatedCrc = CrcCalculator.calculateCrc(dataBytes);
-
-        // Define headers
-        String headerStr = String.format("%d%c%d%c", sequenceNumber, SEPARATOR, calculatedCrc, SEPARATOR);
-        byte[] headerBytes = new byte[HEADERS_BYTE_SIZE];
-        byte[] headerStrAsBytes = headerStr.getBytes();
-
-        // Copia headers para array de HEADERS_BYTE_SIZE (headers devem sempre ter o mesmo tamanho fixo)
-        for (int i = 0; i < headerBytes.length; i++) {
-            if (headerStrAsBytes.length > i) {
-                headerBytes[i] = headerStrAsBytes[i];
-            } else {
-                break;
-            }
-        }
-
-        // Adiciona padding entre crc e padding se precisa de padding nos headers
-        if (headerStrAsBytes.length < headerBytes.length) {
-            headerBytes[headerBytes.length - 1] = (byte) SEPARATOR;
-        }
-
-        // Build packet from header and data byte arrays
-        byte[] finalPacketBytesWithoutDataPadding = new byte[headerBytes.length + dataBytes.length];
-        ByteBuffer packetBuffer = ByteBuffer.wrap(finalPacketBytesWithoutDataPadding);
-        packetBuffer.put(headerBytes);
-        packetBuffer.put(dataBytes);
-
-        int dataStrSize = finalPacketBytesWithoutDataPadding.length;
-        byte[] finalBuffer = Arrays.copyOf(packetBuffer.array(), PACKET_BYTE_SIZE);
-        // Se dados do pacote foram menores que 300
-        if (dataStrSize < PACKET_BYTE_SIZE) {
-            // Adicona separadoR entre dados e padding, conforme --> num seq/crc/padding headers/texto/padding texto
-            finalBuffer[dataStrSize] = (byte) SEPARATOR;
-        }
-
-        return finalBuffer;
     }
 }
