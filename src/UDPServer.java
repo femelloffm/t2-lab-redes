@@ -29,6 +29,7 @@ class UDPServer {
             byte[] receiveData = new byte[300];
             boolean hasActiveConnection = false;
             int ackNumber = 0;
+            int connectionNumber = 0;
 
             while (true) {
                 // RECEBE NOVA MENSAGEM
@@ -55,6 +56,7 @@ class UDPServer {
                     System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
                     serverSocket.send(sendPacket);
                     hasActiveConnection = true;
+                    connectionNumber += 1;
                 }
                 // RECEBEU SOLICITACAO PARA ENCERRAMENTO DE CONEXAO
                 else if (hasActiveConnection && packetDataParts[3].equals(FIN.name())) {
@@ -70,7 +72,7 @@ class UDPServer {
                     int receivedSequenceNumber = Integer.parseInt(packetDataParts[0]);
                     ackNumber = receivedSequenceNumber + 1;
                     // TODO se recebe um pacote com num de sequencia X mas um de numero de sequencia menor nao foi recebido, transmite um ACK com o numero de sequencia do ultimo pacote confirmado
-                    FileUtil.writeBytesToFile("copia.txt", packetDataParts[3].getBytes());
+                    FileUtil.writeBytesToFile(String.format("copia%d.txt", connectionNumber), packetDataParts[3].getBytes());
 
                     sendData = formatPacketData(ackNumber, ACK.name());
                     DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
