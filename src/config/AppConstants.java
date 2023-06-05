@@ -7,4 +7,6 @@ public class AppConstants {
     public final static Integer MAX_DATA_BYTE_SIZE = PACKET_BYTE_SIZE - HEADERS_BYTE_SIZE;
     public final static Integer SERVER_PORT = 9876;
     public final static Integer ACK_TIMEOUT = 30000;
+    public final static Integer SLEEP_TIME = 500;
+    public final static Integer THRESHOLD = 8;
 }
