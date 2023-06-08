@@ -46,6 +46,7 @@ class UDPClient {
             int sequenceNumber = 0;
             int fileOffset = 0;
             boolean hasActiveConnection = false;
+            int lastAckNumber = 0;
 
             // ENVIA SOLICITACAO PARA ESTABELECIMENTO DE CONEXAO
             sendData = formatPacketData(sequenceNumber, SYN.name());
@@ -128,15 +129,17 @@ class UDPClient {
                 } else if (hasActiveConnection && packetDataParts[3].equals(ACK.name())) {
                     // numero de ack recebido = numero de sequencia + 1
                     int ackNumber = Integer.parseInt(packetDataParts[0]);
+                    lastAckNumber = ackNumber;
                     System.out.println("Recebeu ACK. Parando timers de pacote enviado com num de sequencia igual ou menor a " + (ackNumber - 1) + "...");
                     timerByPacket.entrySet().removeIf(timerEntry -> timerEntry.getKey() <= ackNumber - 1);
                     dataByPacket.entrySet().removeIf(dataEntry -> dataEntry.getKey() <= ackNumber - 1);
                     // TODO implementar FAST RETRANSMIT se recebeu 3 ACKs duplicados
                 }
 
-                // TODO corrigir para enviar proxima leva de dados apenas apos ter recebido os ACKs
                 // ENVIA DADOS
-                if (hasActiveConnection && fileOffset < fileBytes.length) {
+                boolean allPacketsWereAcked = lastAckNumber == sequenceNumber; // so envia a proxima leva de dados se tudo ja enviado foi confirmado
+
+                if (hasActiveConnection && allPacketsWereAcked && fileOffset < fileBytes.length) {
                     System.out.printf("\nVai enviar dados do arquivo. Mecanismo de controle de congestionamento: %s  Janela de congestionamento: %d\n",
                             currentCongestionControlType, cwnd);
                     for (int i = 0; i < cwnd; i++) {
@@ -169,7 +172,7 @@ class UDPClient {
                     }
                 }
                 // DEVE ENCERRAR A CONEXAO --> ENVIOU TODOS OS DADOS
-                else if (hasActiveConnection) {
+                else if (hasActiveConnection && allPacketsWereAcked) {
                     byte[] sendEndData = formatPacketData(0, FIN.name());
                     System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendEndData));
                     sendMessage(sendEndData, serverIpAddress, sequenceNumber, clientSocket, timerByPacket, dataByPacket);
