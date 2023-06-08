@@ -1,7 +1,8 @@
-// Recebe um pacote de algum cliente
-// Separa o dado, o endere�o IP e a porta deste cliente
-// Imprime o dado na tela
-
+/*----------------------------------------------------------------------------------------*/
+/* T2 - Laboratório de Redes de Computadores - Professora Cristina Moreira Nunes - 2023/1 */
+/* André Luiz Rodrigues, Fernanda Ferreira de Mello, Matheus Pozzer Moraes                */
+/*----------------------------------------------------------------------------------------*/
+import enums.CongestionControlType;
 import util.CrcCalculator;
 import util.FileUtil;
 
@@ -22,7 +23,7 @@ class UDPServer {
 
         try (DatagramSocket serverSocket = new DatagramSocket(SERVER_PORT)) {
             
-            List<Integer> receivedAck = new ArrayList<Integer>();
+            List<Integer> receivedAck = new ArrayList<>();
             int lastValidAck = 0;
             byte[] sendData;
             byte[] receiveData = new byte[300];
@@ -30,10 +31,12 @@ class UDPServer {
             int ackNumber = 0;
             int connectionNumber = 0;
             int cwnd = 1;
+            CongestionControlType currentCongestionControlType = CongestionControlType.SLOW_START;
             int receivedDataCount = 0;
 
             while (true) {
                 Thread.sleep(SLEEP_TIME);
+
                 // RECEBE NOVA MENSAGEM
                 DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
                 serverSocket.receive(receivePacket);
@@ -53,6 +56,7 @@ class UDPServer {
 
                 // RECEBEU SOLICITACAO PARA ESTABELECIMENTO DE CONEXAO
                 if (!hasActiveConnection && packetDataParts[3].equals(SYN.name())) {
+                    System.out.printf("\n-------------ESTABELECENDO CONEXAO COM CLIENTE %s:%d-------------\n", clientIpAddress.getHostAddress(), clientPort);
                     sendData = formatPacketData(ackNumber, SYNACK.name());
                     DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
                     System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
@@ -62,35 +66,59 @@ class UDPServer {
                 }
                 // RECEBEU SOLICITACAO PARA ENCERRAMENTO DE CONEXAO
                 else if (hasActiveConnection && packetDataParts[3].equals(FIN.name())) {
-                    hasActiveConnection = false;
-                    ackNumber = 0;
-                    sendData = formatPacketData(ackNumber, FINACK.name());
+                    sendData = formatPacketData(0, FINACK.name());
                     DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
                     System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
                     serverSocket.send(sendPacket);
+
+                    // Reseta variaveis
+                    hasActiveConnection = false;
+                    ackNumber = 0;
+                    receivedDataCount = 0;
+                    cwnd = 1;
+                    currentCongestionControlType = CongestionControlType.SLOW_START;
+                    lastValidAck = 0;
+                    receivedAck.clear();
                 }
                 // RECEBEU DADOS
                 else if (hasActiveConnection && !packetDataParts[3].equals(ACK.name())) {
-                    if(Integer.parseInt(packetDataParts[0]) == lastValidAck){
+                    //TODO se recebe um pacote com num de sequencia X mas um de numero de sequencia menor nao foi recebido, transmite um ACK com o numero de sequencia do ultimo pacote confirmado
+                    //TODO lidar com ACKS duplicados
+                    /*if(Integer.parseInt(packetDataParts[0]) == lastValidAck){
                         if(receivedAck.stream().filter( storedAck -> lastValidAck < storedAck).count() > 0)
                         lastValidAck++;
-                    }
+                    }*/
                     receivedDataCount++;
                     receivedAck.add(Integer.parseInt(packetDataParts[0]));
                     int receivedSequenceNumber = Integer.parseInt(packetDataParts[0]);
                     ackNumber = receivedSequenceNumber + 1;
-                    //1,2,3,4,5,6
-                    // TODO se recebe um pacote com num de sequencia X mas um de numero de sequencia menor nao foi recebido, transmite um ACK com o numero de sequencia do ultimo pacote confirmado
                     FileUtil.writeBytesToFile(String.format("copia%d.txt", connectionNumber), packetDataParts[3].getBytes());
 
-                    sendData = formatPacketData(ackNumber, ACK.name());
-                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
-
-                    System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
-                    if( receivedDataCount == cwnd && cwnd < THRESHOLD ) {
+                    // Se ja recebeu todos os pacotes da janela de congestionamento, manda apenas um ack acumulando todos os acks
+                    if (receivedDataCount == cwnd) {
+                        sendData = formatPacketData(ackNumber, ACK.name());
+                        DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
+                        System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
                         serverSocket.send(sendPacket);
-                        cwnd = cwnd * 2;
                         receivedDataCount = 0;
+
+                        if (currentCongestionControlType.equals(CongestionControlType.SLOW_START) && cwnd < THRESHOLD) {
+                            cwnd = cwnd * 2;
+                        } else if (currentCongestionControlType.equals(CongestionControlType.SLOW_START)) {
+                            currentCongestionControlType = CongestionControlType.CONGESTION_AVOIDANCE;
+                        }
+
+                        if (currentCongestionControlType.equals(CongestionControlType.CONGESTION_AVOIDANCE)) {
+                            cwnd += 1;
+                        }
+                    }
+                    // Se podia receber mais pacotes na janela, mas ja recebeu o ultimo pacote com os dados do arquivo, envia um ack acumulando os acks
+                    // Se recebi um pacote com dados e padding no final, é o ultimo pacote
+                    else if (packetDataParts.length == 5) {
+                        sendData = formatPacketData(ackNumber, ACK.name());
+                        DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
+                        System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
+                        serverSocket.send(sendPacket);
                     }
                 }
             }

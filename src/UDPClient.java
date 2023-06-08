@@ -1,7 +1,9 @@
-// L� uma linha do teclado
-// Envia o pacote (linha digitada) ao servidor
-
+/*----------------------------------------------------------------------------------------*/
+/* T2 - Laboratório de Redes de Computadores - Professora Cristina Moreira Nunes - 2023/1 */
+/* André Luiz Rodrigues, Fernanda Ferreira de Mello, Matheus Pozzer Moraes                */
+/*----------------------------------------------------------------------------------------*/
 import dto.FilePacketInformation;
+import enums.CongestionControlType;
 import util.CrcCalculator;
 import util.FileUtil;
 
@@ -9,7 +11,6 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.net.Socket;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -22,26 +23,25 @@ class UDPClient {
 
     public static void main(String[] args) throws Exception {
         if (args.length != 2) {
-            System.err.println(
-                    "ERRO: deve informar o nome do arquivo e o endereço IP do servidor, nessa ordem, como argumento");
+            System.err.println("ERRO: deve informar o nome do arquivo e o endereço IP do servidor, nessa ordem, como argumento");
             System.exit(1);
         }
 
         // Pega bytes do arquivo a enviar
         byte[] fileBytes = FileUtil.readBytesFromFile(args[0]);
-        System.out.println("Going to send file " + args[0] + ". File has " + fileBytes.length + " bytes");
+        System.out.println("Vai enviar arquivo " + args[0] + ". Arquivo possui " + fileBytes.length + " bytes");
         String serverAddress = args[1];
         Map<Integer, Long> timerByPacket = new HashMap<>();
         Map<Integer, byte[]> dataByPacket = new HashMap<>();
         int cwnd = 1;
+        CongestionControlType currentCongestionControlType = CongestionControlType.SLOW_START;
 
         // Declara socket cliente
         try (DatagramSocket clientSocket = new DatagramSocket()) {
-            InetAddress ipServerAddress = InetAddress.getByName(serverAddress);
+            InetAddress serverIpAddress = InetAddress.getByName(serverAddress);
 
             byte[] sendData;
             byte[] receiveData = new byte[300];
-            DatagramPacket sendPacket;
             DatagramPacket receivePacket;
             int sequenceNumber = 0;
             int fileOffset = 0;
@@ -49,37 +49,41 @@ class UDPClient {
 
             // ENVIA SOLICITACAO PARA ESTABELECIMENTO DE CONEXAO
             sendData = formatPacketData(sequenceNumber, SYN.name());
-            sendPacket = new DatagramPacket(sendData, sendData.length, ipServerAddress, SERVER_PORT);
-
-            System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", ipServerAddress.getHostAddress(),
+            System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", serverIpAddress.getHostAddress(),
                     SERVER_PORT, new String(sendData));
-            clientSocket.send(sendPacket);
-            timerByPacket.put(0, System.currentTimeMillis());
-            dataByPacket.put(0, sendData);
+            sendMessage(sendData, serverIpAddress, sequenceNumber, clientSocket, timerByPacket, dataByPacket);
 
             while (true) {
                 Thread.sleep(SLEEP_TIME);
+
                 if (timerByPacket.size() > 0) {
-                    System.out.println("Horario de envio (ms) de pacotes aguardando ACK:");
-                    timerByPacket.forEach((sentSequenceNumber, sendTime) -> {
-                        System.out.printf("Num Seq.: %d - Horario: %d\n", sentSequenceNumber, sendTime);
+                    // Verifica se a espera de um dos ACKs alcancou o timeout e, se sim, retransmite o pacote
+                    System.out.println("      Horario de envio (ms) de pacotes aguardando ACK:");
+                    boolean timeoutOccurred = timerByPacket.entrySet().stream().map(timerEntry -> {
+                        int sentSequenceNumber = timerEntry.getKey();
+                        long sendTime = timerEntry.getValue();
+                        System.out.printf("      - Num Seq.: %d - Horario: %d\n", sentSequenceNumber, sendTime);
                         // Se passou do timeout, deve retransmitir
                         if ((System.currentTimeMillis() - sendTime) >= ACK_TIMEOUT) {
-                            System.out.println("\tTimeout de pacote " + sentSequenceNumber + " alcancado");
+                            System.out.println("      Timeout de pacote " + sentSequenceNumber + " alcancado");
                             byte[] bytesToRetransmit = dataByPacket.get(sentSequenceNumber);
-                            DatagramPacket retransmitPacket = new DatagramPacket(bytesToRetransmit,
-                                    bytesToRetransmit.length, ipServerAddress, SERVER_PORT);
-                            System.out.printf("\tRetransmitindo mensagem para servidor %s:%d --> %s\n",
-                                    ipServerAddress.getHostAddress(), SERVER_PORT, new String(bytesToRetransmit));
+                            System.out.printf("      Retransmitindo mensagem para servidor %s:%d --> %s\n",
+                                    serverIpAddress.getHostAddress(), SERVER_PORT, new String(bytesToRetransmit));
                             try {
-                                clientSocket.send(retransmitPacket);
+                                sendMessage(bytesToRetransmit, serverIpAddress, sentSequenceNumber, clientSocket, timerByPacket, dataByPacket);
                             } catch (IOException e) {
-                                System.err.println("\tRetransmissou falhou: " + e);
+                                System.err.println("      Retransmissou falhou: " + e);
                             }
-                            timerByPacket.put(sentSequenceNumber, System.currentTimeMillis());
+                            return true;
                         }
-                    });
-                    System.out.println("--------------------------------");
+                        return false;
+                    }).anyMatch(retransmitted -> retransmitted);
+
+                    if (timeoutOccurred) { // Se ocorre timeout, volta para o slow start com janela de congestionamento 1
+                        System.out.println("Timeout ocorreu enquanto aguardava o ACK. Voltando para o SLOW START...");
+                        currentCongestionControlType = CongestionControlType.SLOW_START;
+                        cwnd = 1;
+                    }
                 }
 
                 receivePacket = new DatagramPacket(receiveData, receiveData.length);
@@ -103,14 +107,11 @@ class UDPClient {
                 // RECEBEU SOLICITACAO PARA ESTABELECIMENTO DE CONEXAO
                 if (!hasActiveConnection && packetDataParts[3].equals(SYNACK.name())) {
                     sendData = formatPacketData(sequenceNumber, ACK.name());
-                    sendPacket = new DatagramPacket(sendData, sendData.length, ipServerAddress, SERVER_PORT);
                     System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n",
                             clientIpAddress.getHostAddress(), clientPort, new String(sendData));
-                    clientSocket.send(sendPacket);
+                    sendMessage(sendData, serverIpAddress, sequenceNumber, clientSocket, timerByPacket, dataByPacket);
 
                     hasActiveConnection = true;
-                    timerByPacket.put(sequenceNumber, System.currentTimeMillis());
-                    dataByPacket.put(sequenceNumber, sendData);
                     int ackNumber = Integer.parseInt(packetDataParts[0]);
                     timerByPacket.remove(ackNumber);
                     dataByPacket.remove(ackNumber);
@@ -119,69 +120,70 @@ class UDPClient {
                 // RECEBEU SOLICITACAO PARA ENCERRAMENTO DE CONEXAO
                 else if (hasActiveConnection && packetDataParts[3].equals(FINACK.name())) {
                     sendData = formatPacketData(0, ACK.name());
-                    sendPacket = new DatagramPacket(sendData, sendData.length, ipServerAddress, SERVER_PORT);
-                    System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n",
-                            clientIpAddress.getHostAddress(), clientPort, new String(sendData));
-                    clientSocket.send(sendPacket);
-
-                    hasActiveConnection = false;
-                    sequenceNumber = 0;
+                    System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
+                    sendMessage(sendData, serverIpAddress, sequenceNumber, clientSocket, timerByPacket, dataByPacket);
                     timerByPacket.clear();
                     dataByPacket.clear();
                     break;
                 } else if (hasActiveConnection && packetDataParts[3].equals(ACK.name())) {
                     // numero de ack recebido = numero de sequencia + 1
                     int ackNumber = Integer.parseInt(packetDataParts[0]);
-                    timerByPacket.remove(ackNumber - 1);
-                    dataByPacket.remove(ackNumber - 1);
-                    System.out.println("Recebeu ACK. Parando timer de pacote enviado com num de sequencia "
-                            + (ackNumber - 1) + "...");
+                    System.out.println("Recebeu ACK. Parando timers de pacote enviado com num de sequencia igual ou menor a " + (ackNumber - 1) + "...");
+                    timerByPacket.entrySet().removeIf(timerEntry -> timerEntry.getKey() <= ackNumber - 1);
+                    dataByPacket.entrySet().removeIf(dataEntry -> dataEntry.getKey() <= ackNumber - 1);
+                    // TODO implementar FAST RETRANSMIT se recebeu 3 ACKs duplicados
                 }
 
+                // TODO corrigir para enviar proxima leva de dados apenas apos ter recebido os ACKs
                 // ENVIA DADOS
                 if (hasActiveConnection && fileOffset < fileBytes.length) {
+                    System.out.printf("\nVai enviar dados do arquivo. Mecanismo de controle de congestionamento: %s  Janela de congestionamento: %d\n",
+                            currentCongestionControlType, cwnd);
                     for (int i = 0; i < cwnd; i++) {
                         FilePacketInformation newPacketInfo = formatPacketDataForFileTransfer(sequenceNumber, fileBytes,
                                 fileOffset);
-                        sendPacket = new DatagramPacket(newPacketInfo.getData(), newPacketInfo.getData().length,
-                                ipServerAddress, SERVER_PORT);
                         System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n",
                                 clientIpAddress.getHostAddress(), clientPort, new String(newPacketInfo.getData()));
-                        clientSocket.send(sendPacket);
+                        sendMessage(newPacketInfo.getData(), serverIpAddress, sequenceNumber, clientSocket, timerByPacket, dataByPacket);
+
                         fileOffset = newPacketInfo.getFileOffset();
-                        timerByPacket.put(sequenceNumber, System.currentTimeMillis());
-                        dataByPacket.put(sequenceNumber, newPacketInfo.getData());
                         sequenceNumber += 1;
-                        if (hasActiveConnection && fileOffset >= fileBytes.length) {
-                            endConnection(hasActiveConnection, fileOffset, clientSocket, timerByPacket, dataByPacket,
-                                    ipServerAddress, clientIpAddress, sequenceNumber, clientPort);
-                                    break;
+
+                        if (fileOffset >= fileBytes.length) {
+                            break;
                         }
                     }
-                    if (cwnd < THRESHOLD) {
+
+                    // Se é slow start e ainda nao atingiu o limite, aumenta exponencialmente a janela de congestionamento
+                    if (currentCongestionControlType.equals(CongestionControlType.SLOW_START) && cwnd < THRESHOLD) {
                         cwnd = cwnd * 2;
                     }
-                    // TODO VALIDA ACK PARA ENVIAR DADOS APENAS APOS CONFIRMAR O PROXIMO, VALIDANDO
-                    // NUMERO DE ACK
-                    // TODO CONTROLE DE CONGESTIONAMENTO
+                    // Se é slow start e atingiu o limite, altera tecnica para congestion avoidance
+                    else if (currentCongestionControlType.equals(CongestionControlType.SLOW_START)) {
+                        currentCongestionControlType = CongestionControlType.CONGESTION_AVOIDANCE;
+                    }
+
+                    // Se é congestion avoidance, aumenta incrementalmente a janela de congestionamento
+                    if (currentCongestionControlType.equals(CongestionControlType.CONGESTION_AVOIDANCE)) {
+                        cwnd += 1;
+                    }
                 }
                 // DEVE ENCERRAR A CONEXAO --> ENVIOU TODOS OS DADOS
-                else if (hasActiveConnection && fileOffset >= fileBytes.length) {
-                    endConnection(hasActiveConnection, fileOffset, clientSocket, timerByPacket, dataByPacket,
-                            ipServerAddress, clientIpAddress, sequenceNumber, clientPort);
+                else if (hasActiveConnection) {
+                    byte[] sendEndData = formatPacketData(0, FIN.name());
+                    System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendEndData));
+                    sendMessage(sendEndData, serverIpAddress, sequenceNumber, clientSocket, timerByPacket, dataByPacket);
                 }
             }
         }
     }
 
-    private static void endConnection(boolean hasActiveConnection, int fileOffset, DatagramSocket clientSocket,
-            Map<Integer, Long> timerByPacket, Map<Integer, byte[]> dataByPacket, InetAddress ipServerAddress,
-            InetAddress clientIpAddress, int sequenceNumber, int clientPort) throws IOException {
-        byte[] sendData = formatPacketData(0, FIN.name());
-        DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, ipServerAddress, SERVER_PORT);
-        System.out.printf("Enviando mensagem para servidor %s:%d --> %s\n", clientIpAddress.getHostAddress(),
-                clientPort, new String(sendData));
+    private static void sendMessage(byte[] sendData, InetAddress serverIpAddress, int sequenceNumber, DatagramSocket clientSocket,
+                                    Map<Integer, Long> timerByPacket, Map<Integer, byte[]> dataByPacket) throws IOException {
+
+        DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, serverIpAddress, SERVER_PORT);
         clientSocket.send(sendPacket);
+
         timerByPacket.put(sequenceNumber, System.currentTimeMillis());
         dataByPacket.put(sequenceNumber, sendData);
     }
