@@ -13,4 +13,5 @@ public class AppConstants {
     public final static Integer ACK_TIMEOUT = 30000;
     public final static Integer SLEEP_TIME = 500;
     public final static Integer THRESHOLD = 8;
+    public final static Integer SOCKET_TIMEOUT = 60000;
 }

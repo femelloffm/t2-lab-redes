@@ -6,6 +6,5 @@ package enums;
 
 public enum CongestionControlType {
     SLOW_START,
-    CONGESTION_AVOIDANCE,
-    FAST_RETRANSMIT;
+    CONGESTION_AVOIDANCE;
 }

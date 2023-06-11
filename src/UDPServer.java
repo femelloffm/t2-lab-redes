@@ -2,6 +2,7 @@
 /* T2 - Laboratório de Redes de Computadores - Professora Cristina Moreira Nunes - 2023/1 */
 /* André Luiz Rodrigues, Fernanda Ferreira de Mello, Matheus Pozzer Moraes                */
 /*----------------------------------------------------------------------------------------*/
+
 import enums.CongestionControlType;
 import util.CrcCalculator;
 import util.FileUtil;
@@ -10,9 +11,7 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import static config.AppConstants.*;
@@ -21,11 +20,10 @@ import static util.PacketFormatter.formatPacketData;
 
 class UDPServer {
 
-    public static void main(String[] args) throws InterruptedException{
+    public static void main(String[] args) throws InterruptedException {
 
         try (DatagramSocket serverSocket = new DatagramSocket(SERVER_PORT)) {
-            
-            List<Integer> receivedSequenceNumbers = new ArrayList<>();
+
             int lastValidReceivedSequenceNumber = -1;
             byte[] sendData;
             byte[] receiveData = new byte[300];
@@ -36,6 +34,7 @@ class UDPServer {
             CongestionControlType currentCongestionControlType = CongestionControlType.SLOW_START;
             int receivedDataCount = 0;
             Map<Integer, byte[]> dataBySequenceNumber = new HashMap<>();
+            Map<Integer, Integer> numberOfSendsByAckNumber = new HashMap<>();
 
             while (true) {
                 Thread.sleep(SLEEP_TIME);
@@ -80,33 +79,51 @@ class UDPServer {
                     receivedDataCount = 0;
                     cwnd = 1;
                     currentCongestionControlType = CongestionControlType.SLOW_START;
-                    lastValidReceivedSequenceNumber = 0;
-                    receivedSequenceNumbers.clear();
+                    lastValidReceivedSequenceNumber = -1;
+                    dataBySequenceNumber.clear();
+                    numberOfSendsByAckNumber.clear();
                 }
                 // RECEBEU DADOS
                 else if (hasActiveConnection && !packetDataParts[3].equals(ACK.name())) {
                     final int receivedSequenceNumber = Integer.parseInt(packetDataParts[0]);
+                    boolean hasAlreadyUpdatedCwnd = false;
+
+                    // RECEBEU MENSAGEM RESTART INDICANDO VOLTA PARA O INICIO DO SLOW START
+                    if (packetDataParts[3].equals(RESTART.name()) && (receivedDataCount < cwnd)) {
+                        cwnd = 1;
+                        currentCongestionControlType = CongestionControlType.SLOW_START;
+                        // Mandar ACK
+                        sendAckMessage(ackNumber, clientIpAddress, clientPort, serverSocket, numberOfSendsByAckNumber);
+                        continue;
+                    }
+
+                    if (cwnd != 1 && numberOfSendsByAckNumber.getOrDefault(receivedSequenceNumber, 0) >= 3) {
+                        hasAlreadyUpdatedCwnd = true;
+                        cwnd = cwnd / 2;
+                    }
+
+                    System.out.printf("Janela de congestionamento: %d   Pacotes ja recebidos da janela: %d\n", cwnd, receivedDataCount);
+
                     // Se recebeu pacote fora de ordem ou perdeu um pacote
-                    if (receivedSequenceNumber != (lastValidReceivedSequenceNumber + 1)) {
+                    if ((receivedSequenceNumber != (lastValidReceivedSequenceNumber + 1))) {
+                        System.out.printf("Recebeu pacote fora de ordem. Esperava num. de sequencia %d e recebeu num %d\n",
+                                (lastValidReceivedSequenceNumber + 1), receivedSequenceNumber);
                         // Armazena dado que veio fora de ordem
                         dataBySequenceNumber.put(receivedSequenceNumber, packetDataParts[3].getBytes());
                         // Manda ACK com ack number igual a (lastValidReceivedSequenceNumber + 1)
-                        sendData = formatPacketData((lastValidReceivedSequenceNumber + 1), ACK.name());
-                        DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
-                        System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
-                        serverSocket.send(sendPacket);
+                        sendAckMessage((lastValidReceivedSequenceNumber + 1), clientIpAddress, clientPort, serverSocket, numberOfSendsByAckNumber);
+                        receivedDataCount++;
                     }
                     // Se recebeu pacote com numero de sequencia esperado
                     else {
                         receivedDataCount++;
-                        receivedSequenceNumbers.add(receivedSequenceNumber);
                         ackNumber = receivedSequenceNumber + 1;
                         lastValidReceivedSequenceNumber = receivedSequenceNumber;
                         FileUtil.writeBytesToFile(String.format("copia%d.txt", connectionNumber), packetDataParts[3].getBytes());
 
                         // Se eu ja tinha recebido os proximos pacotes fora de ordem antes, tambem posso escrever e confirmar eles agora
                         int nextSequenceNumber = lastValidReceivedSequenceNumber + 1;
-                        while(true) {
+                        while (true) {
                             if (!dataBySequenceNumber.containsKey(nextSequenceNumber))
                                 break;
 
@@ -115,7 +132,7 @@ class UDPServer {
                             // incrementar o ackNumber e o lastValidReceivedSequenceNumber em 1
                             ackNumber++;
                             lastValidReceivedSequenceNumber++;
-                            receivedDataCount++;
+                            //receivedDataCount++;
                             // remover esse num sequencia do map
                             dataBySequenceNumber.remove(nextSequenceNumber);
                             // incrementa chave para proxima iteracao
@@ -123,30 +140,24 @@ class UDPServer {
                         }
 
                         // Se ja recebeu todos os pacotes da janela de congestionamento, manda apenas um ack acumulando todos os acks
-                        if (receivedDataCount == cwnd) {
-                            sendData = formatPacketData(ackNumber, ACK.name());
-                            DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
-                            System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
-                            serverSocket.send(sendPacket);
+                        if (receivedDataCount >= cwnd) {
+                            sendAckMessage(ackNumber, clientIpAddress, clientPort, serverSocket, numberOfSendsByAckNumber);
                             receivedDataCount = 0;
 
-                            if (currentCongestionControlType.equals(CongestionControlType.SLOW_START) && cwnd < THRESHOLD) {
+                            if (currentCongestionControlType.equals(CongestionControlType.SLOW_START) && cwnd < THRESHOLD && !hasAlreadyUpdatedCwnd) {
                                 cwnd = cwnd * 2;
-                            } else if (currentCongestionControlType.equals(CongestionControlType.SLOW_START)) {
+                            } else if (currentCongestionControlType.equals(CongestionControlType.SLOW_START) && !hasAlreadyUpdatedCwnd) {
                                 currentCongestionControlType = CongestionControlType.CONGESTION_AVOIDANCE;
                             }
 
-                            if (currentCongestionControlType.equals(CongestionControlType.CONGESTION_AVOIDANCE)) {
+                            if (currentCongestionControlType.equals(CongestionControlType.CONGESTION_AVOIDANCE) && !hasAlreadyUpdatedCwnd) {
                                 cwnd += 1;
                             }
                         }
                         // Se podia receber mais pacotes na janela, mas ja recebeu o ultimo pacote com os dados do arquivo, envia um ack acumulando os acks
                         // Se recebi um pacote com dados e padding no final, é o ultimo pacote
                         else if (packetDataParts.length == 5) {
-                            sendData = formatPacketData(ackNumber, ACK.name());
-                            DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
-                            System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
-                            serverSocket.send(sendPacket);
+                            sendAckMessage(ackNumber, clientIpAddress, clientPort, serverSocket, numberOfSendsByAckNumber);
                         }
                     }
                 }
@@ -154,5 +165,14 @@ class UDPServer {
         } catch (IOException e) {
             e.printStackTrace();
         }
+    }
+
+    private static void sendAckMessage(int ackNumber, InetAddress clientIpAddress, int clientPort, DatagramSocket serverSocket,
+                                       Map<Integer, Integer> numberOfSendsByAckNumber) throws IOException {
+        byte[] sendData = formatPacketData(ackNumber, ACK.name());
+        DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, clientIpAddress, clientPort);
+        System.out.printf("Enviando mensagem para endereco %s:%d --> %s\n", clientIpAddress.getHostAddress(), clientPort, new String(sendData));
+        serverSocket.send(sendPacket);
+        numberOfSendsByAckNumber.put(ackNumber, numberOfSendsByAckNumber.getOrDefault(ackNumber, 0) + 1);
     }
 }

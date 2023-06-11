@@ -9,5 +9,6 @@ public enum MessageType {
     ACK,
     SYNACK,
     FIN,
-    FINACK;
+    FINACK,
+    RESTART;
 }
